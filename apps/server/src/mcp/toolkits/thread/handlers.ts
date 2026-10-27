@@ -191,6 +191,12 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         threads,
         projection: { thread },
       } = yield* readThread(input.threadId);
+      if (thread.lineage.relationshipToParent === "subagent")
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "A delegated child keeps the provider and model it was started with. Start a separate agent with `delegate_task` instead.",
+        });
       const type = modelSelectionCommandType(thread.providerInstanceId, input.modelSelection);
       const result = yield* threads
         .dispatch({

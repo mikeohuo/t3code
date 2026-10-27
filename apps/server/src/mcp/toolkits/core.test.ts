@@ -572,6 +572,63 @@ it.effect("a read-only client reads threads and is refused every write before it
 );
 const dispatched: Array<string> = [];
 
+it.effect("refuses to reconfigure a delegated child and points the caller at delegate_task", () => {
+  const childId = ThreadId.make("delegated-child");
+  const userThreadId = ThreadId.make("user-thread");
+  const childShell: OrchestrationV2ThreadShell = {
+    ...McpToolAccessTestkit.liveThreadShell(childId),
+    createdBy: "agent",
+    creationSource: "mcp",
+    lineage: { rootThreadId: threadId, parentThreadId: threadId, relationshipToParent: "subagent" },
+  };
+  const shellFor = (id: ThreadId) =>
+    id === childId ? childShell : McpToolAccessTestkit.liveThreadShell(id);
+  const configured: Array<ThreadId> = [];
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const configure = (id: ThreadId) =>
+      server
+        .callTool({
+          name: "t3_thread_configure",
+          arguments: { threadId: id, modelSelection: { instanceId: "codex", model: "gpt-5.5" } },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+    const child = yield* configure(childId);
+    expect(declaredFailure(child)).toMatchObject({
+      code: "invalid_request",
+      message: expect.stringContaining("delegate_task"),
+    });
+    expect(configured).toEqual([]);
+
+    const user = yield* configure(userThreadId);
+    expect(user.isError).toBe(false);
+    expect(configured).toEqual([userThreadId]);
+  }).pipe(
+    Effect.provide(
+      layerThreadToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) => Effect.succeed(shellFor(id)),
+            getProjectThreadRecords: ({ threadId: id }) =>
+              Effect.succeed(McpToolAccessTestkit.idleThreadProjection(shellFor(id)) as never),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                if ("threadId" in command) configured.push(command.threadId);
+                return { sequence: 7 } as never;
+              }),
+          }),
+        ),
+      ),
+    ),
+  );
+});
+
 it.effect("refuses act-as-caller tools to a client caller", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
