@@ -4363,30 +4363,39 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("fails without a worktree when the t3.json sparse pattern file is missing", () =>
+    it.effect("fails without a worktree when the t3.json sparse pattern path is not a file", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const pathService = yield* Path.Path;
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
-        yield* writeTextFile(cwd, "t3.json", `{ "worktreeSparsePatternsPath": "missing.txt" }`);
-        yield* git(cwd, ["add", "t3.json"]);
-        yield* git(cwd, ["commit", "-m", "missing sparse patterns"]);
+        yield* writeTextFile(cwd, "patterns/keep.txt", "/*\n");
         const driver = yield* GitVcsDriver.GitVcsDriver;
-        const worktreePath = pathService.join(yield* makeTmpDir("git-worktrees-"), "missing");
-
-        const error = yield* Effect.flip(
-          driver.createWorktree({
+        const worktrees = yield* makeTmpDir("git-worktrees-");
+        for (const patternsPath of ["missing.txt", "patterns"]) {
+          yield* writeTextFile(
             cwd,
-            path: worktreePath,
-            refName: initialBranch,
-            newRefName: "feature/missing",
-          }),
-        );
+            "t3.json",
+            JSON.stringify({ worktreeSparsePatternsPath: patternsPath }),
+          );
+          yield* git(cwd, ["add", "."]);
+          yield* git(cwd, ["commit", "-m", "missing sparse patterns"]);
+          const worktreePath = pathService.join(worktrees, patternsPath);
 
-        assert.match(error.detail, /missing\.txt/);
-        assert.isFalse(yield* fileSystem.exists(worktreePath));
-        assert.notInclude(yield* git(cwd, ["worktree", "list"]), "missing");
+          const error = yield* Effect.flip(
+            driver.createWorktree({
+              cwd,
+              path: worktreePath,
+              refName: initialBranch,
+              newRefName: `feature/${patternsPath}`,
+            }),
+          );
+
+          assert.include(error.detail, patternsPath);
+          assert.isFalse(yield* fileSystem.exists(worktreePath));
+          assert.notInclude(yield* git(cwd, ["worktree", "list"]), worktreePath);
+          assert.equal(yield* git(cwd, ["branch", "--list", `feature/${patternsPath}`]), "");
+        }
       }),
     );
 

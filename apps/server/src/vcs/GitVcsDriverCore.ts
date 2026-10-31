@@ -4067,7 +4067,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       : yield* executeGit(
           "GitVcsDriver.createWorktree.readSparsePatterns",
           cwd,
-          ["show", `${ref}:${patternsPath}`],
+          ["cat-file", "blob", `${ref}:${patternsPath}`],
           { allowNonZeroExit: true },
         );
     if (patterns === null || patterns.exitCode !== 0) {
