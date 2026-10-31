@@ -29,51 +29,40 @@ function fileItem(relativePath: string): FileItem {
   };
 }
 
-it.effect("recovers missed watcher changes on reads without rescanning every read", () =>
+it.effect("reads never rescan after the former recovery interval", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      let indexed = "old.ts";
-      let onDisk = indexed;
-      const scanFiles = vi.fn(() => {
-        indexed = onDisk;
-        return { ok: true as const, value: undefined };
-      });
+      const scanFiles = vi.fn(() => ({ ok: true as const, value: undefined }));
       const finder = {
         destroy: vi.fn(),
         waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
         scanFiles,
+        mixedSearch: () => ({ ok: true as const, value: { items: [], totalMatched: 0 } }),
         fileSearch: () => ({
           ok: true as const,
-          value: { items: [fileItem(indexed)], scores: [], totalMatched: 1, totalFiles: 1 },
+          value: { items: [fileItem("watched.ts")], scores: [], totalMatched: 1, totalFiles: 1 },
         }),
+        grep: () => ({ ok: true as const, value: { items: [], nextCursor: null } }),
       } as unknown as FileFinder;
       vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
       const index = yield* WorkspaceSearchIndex.make("/workspace/project");
-      onDisk = "new.ts";
+      yield* TestClock.adjust("10 minutes");
+      expect(yield* index.list()).toEqual({ entries: [], truncated: false });
       expect((yield* index.search("", 10, "file")).entries).toEqual([
-        { path: "old.ts", kind: "file" },
+        { path: "watched.ts", kind: "file" },
       ]);
+      expect(
+        yield* index.searchContents({
+          query: "needle",
+          limit: 1,
+          caseSensitive: true,
+          wholeWord: false,
+          useRegex: false,
+        }),
+      ).toEqual({ matches: [], truncated: false });
       expect(scanFiles).not.toHaveBeenCalled();
-      yield* TestClock.adjust("5 minutes");
-      const results = yield* Effect.all(
-        [index.search("", 10, "file"), index.search("", 10, "file")],
-        { concurrency: "unbounded" },
-      );
-      for (const result of results) {
-        expect(result.entries).toEqual([{ path: "new.ts", kind: "file" }]);
-      }
+      yield* index.refresh();
       expect(scanFiles).toHaveBeenCalledTimes(1);
-      yield* index.search("", 10, "file");
-      expect(scanFiles).toHaveBeenCalledTimes(1);
-      scanFiles.mockImplementationOnce(() => {
-        throw new Error("scan unavailable");
-      });
-      yield* TestClock.adjust("5 minutes");
-      expect((yield* index.search("", 10, "file")).entries).toEqual([
-        { path: "new.ts", kind: "file" },
-      ]);
-      yield* index.search("", 10, "file");
-      expect(scanFiles).toHaveBeenCalledTimes(2);
     }),
   ),
 );
@@ -157,20 +146,14 @@ it.effect("continues whole-word searches after a filtered grep page", () =>
               value: grepResult("needleSuffix", [[0, 6]], nextCursor),
             },
       );
-      using now = vi.spyOn(performance, "now").mockReturnValue(0);
       const finder = {
         destroy: vi.fn(),
         waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
-        scanFiles: () => {
-          now.mockReturnValue(1_000);
-          return { ok: true as const, value: undefined };
-        },
         grep,
       } as unknown as FileFinder;
       vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
 
       const searchIndex = yield* WorkspaceSearchIndex.make("/workspace/project", "content");
-      yield* TestClock.adjust("5 minutes");
       const result = yield* searchIndex.searchContents({
         query: "needle",
         limit: 1,
